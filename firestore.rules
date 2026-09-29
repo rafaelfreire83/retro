@@ -1,0 +1,145 @@
+rules_version = '2';
+
+// Estrutura:
+//   boards/{b}                 título, anonimato e timer (público para quem tem o link)
+//   boards/{b}/private/admin   token do link de admin (ninguém lê)
+//   boards/{b}/admins/{uid}    quem é admin do quadro
+//   boards/{b}/cards/{c}       cards (sem dono gravado, para não quebrar o anonimato)
+//   boards/{b}/owners/{c}      dono de cada card (cada um só lê os próprios)
+//   boards/{b}/presence/{uid}  batimento para contar quem está online
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function textOk(value, min, max) {
+      return value is string && value.size() >= min && value.size() <= max;
+    }
+
+    match /boards/{b} {
+      function path(coll, id) {
+        return /databases/$(database)/documents/boards/$(b)/$(coll)/$(id);
+      }
+      function boardPath() {
+        return /databases/$(database)/documents/boards/$(b);
+      }
+      function isAdmin() {
+        return exists(path('admins', request.auth.uid));
+      }
+      function timerOk(t) {
+        return t.keys().hasOnly(['durationSec', 'startedAt', 'stopped'])
+          && t.durationSec is int && t.durationSec >= 60 && t.durationSec <= 14400
+          && t.stopped is bool
+          && (t.startedAt == null || t.startedAt is timestamp);
+      }
+      function boardFieldsOk(d) {
+        return d.keys().hasOnly(['title', 'anonymous', 'createdAt', 'timer'])
+          && textOk(d.title, 1, 120) && d.anonymous is bool && timerOk(d.timer);
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+
+      // O quadro nasce junto com o token de admin e o primeiro admin (mesmo batch)
+      allow create: if signedIn()
+        && boardFieldsOk(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.timer.startedAt == null
+        && existsAfter(path('private', 'admin'))
+        && existsAfter(path('admins', request.auth.uid));
+
+      // Só o admin altera; o início do tempo usa o relógio do servidor
+      allow update: if signedIn() && isAdmin()
+        && boardFieldsOk(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (request.resource.data.timer.startedAt == resource.data.timer.startedAt
+          || request.resource.data.timer.startedAt == request.time);
+
+      allow delete: if signedIn() && isAdmin();
+
+      function board() {
+        return get(boardPath()).data;
+      }
+      function running() {
+        let t = board().timer;
+        return t.startedAt != null && !t.stopped
+          && request.time < t.startedAt + duration.value(t.durationSec, 's');
+      }
+
+      match /private/admin {
+        allow read: if false;
+        allow create: if signedIn()
+          && !exists(boardPath()) && existsAfter(boardPath())
+          && request.resource.data.keys().hasOnly(['token'])
+          && textOk(request.resource.data.token, 20, 100);
+        allow delete: if signedIn() && isAdmin();
+      }
+
+      match /admins/{uid} {
+        allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+        // Vira admin quem apresentar o token do link de admin
+        allow create: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['token'])
+          && request.resource.data.token == getAfter(path('private', 'admin')).data.token;
+        allow delete: if signedIn() && isAdmin();
+      }
+
+      match /owners/{c} {
+        allow read: if signedIn() && resource.data.uid == request.auth.uid;
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['uid'])
+          && request.resource.data.uid == request.auth.uid
+          && !exists(path('cards', c)) && existsAfter(path('cards', c));
+        allow delete: if signedIn()
+          && (resource.data.uid == request.auth.uid || isAdmin())
+          && !existsAfter(path('cards', c));
+      }
+
+      match /cards/{c} {
+        function isOwner() {
+          return get(path('owners', c)).data.uid == request.auth.uid;
+        }
+        function changed() {
+          return request.resource.data.diff(resource.data).affectedKeys();
+        }
+        // Tempo correndo: o autor mexe nos próprios cards. Fora do tempo: só o admin.
+        function canEdit() {
+          return (running() && isOwner()) || (!running() && isAdmin());
+        }
+        function canDelete() {
+          return isAdmin() || (running() && isOwner());
+        }
+
+        allow read: if signedIn();
+
+        allow create: if signedIn() && running()
+          && request.resource.data.keys().hasOnly(['column', 'text', 'author', 'order', 'createdAt'])
+          && request.resource.data.column in ['good', 'improve']
+          && textOk(request.resource.data.text, 1, 500)
+          && (board().anonymous
+            ? request.resource.data.author == null
+            : (request.resource.data.author == null || textOk(request.resource.data.author, 1, 60)))
+          && request.resource.data.order is number
+          && request.resource.data.createdAt == request.time
+          && getAfter(path('owners', c)).data.uid == request.auth.uid;
+
+        // Reordenar é livre para todos; editar o texto segue a regra do tempo
+        allow update: if signedIn() && (
+          (changed().hasOnly(['order']) && request.resource.data.order is number)
+          || (changed().hasOnly(['text']) && textOk(request.resource.data.text, 1, 500) && canEdit())
+        );
+
+        allow delete: if signedIn() && canDelete();
+      }
+
+      match /presence/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['lastSeen'])
+          && request.resource.data.lastSeen == request.time;
+        allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+      }
+    }
+  }
+}
