@@ -2,6 +2,8 @@
 
 Quadro de retrospectiva em tempo real: **Pontos positivos** e **Pontos a melhorar**.
 
+**Acesse:** https://rafaelfreire83.github.io/retro/
+
 - React (Vite), publicado como site estático no **GitHub Pages**
 - **Firebase** (plano grátis): Firestore guarda os dados e sincroniza em tempo real;
   login anônimo identifica cada navegador, sem cadastro
