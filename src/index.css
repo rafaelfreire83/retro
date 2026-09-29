@@ -11,6 +11,18 @@
   --improve: #e8590c;
   --improve-bg: #fff4e6;
   --danger: #c92a2a;
+  --blue: #1971c2;
+  --blue-bg: #e7f5ff;
+  --purple: #7048e8;
+  --purple-bg: #f3f0ff;
+  --pink: #c2255c;
+  --pink-bg: #fff0f6;
+  --teal: #0c8599;
+  --teal-bg: #e3fafc;
+  --yellow: #e67700;
+  --yellow-bg: #fff9db;
+  --gray: #495057;
+  --gray-bg: #f1f3f5;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -30,6 +42,18 @@
     --improve: #ffa94d;
     --improve-bg: #2e2217;
     --danger: #ff8787;
+    --blue: #74c0fc;
+    --blue-bg: #172433;
+    --purple: #b197fc;
+    --purple-bg: #231d33;
+    --pink: #faa2c1;
+    --pink-bg: #2e1a24;
+    --teal: #66d9e8;
+    --teal-bg: #142a2e;
+    --yellow: #ffd43b;
+    --yellow-bg: #2b2716;
+    --gray: #ced4da;
+    --gray-bg: #25282e;
   }
 }
 
@@ -141,15 +165,33 @@ button.link { border: 0; padding: 0; background: none; color: var(--danger); fon
   color: var(--improve);
 }
 
-.columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; align-items: start; }
 .column {
   padding: 16px;
   border-radius: 12px;
   border-top: 4px solid var(--c);
   background: var(--c-bg);
 }
-.column-good { --c: var(--good); --c-bg: var(--good-bg); }
-.column-improve { --c: var(--improve); --c-bg: var(--improve-bg); }
+.col-good { --c: var(--good); --c-bg: var(--good-bg); }
+.col-improve { --c: var(--improve); --c-bg: var(--improve-bg); }
+.col-blue { --c: var(--blue); --c-bg: var(--blue-bg); }
+.col-purple { --c: var(--purple); --c-bg: var(--purple-bg); }
+.col-pink { --c: var(--pink); --c-bg: var(--pink-bg); }
+.col-teal { --c: var(--teal); --c-bg: var(--teal-bg); }
+.col-yellow { --c: var(--yellow); --c-bg: var(--yellow-bg); }
+.col-gray { --c: var(--gray); --c-bg: var(--gray-bg); }
+.column-title { overflow-wrap: anywhere; }
+.column-actions { margin-left: auto; display: flex; gap: 2px; }
+button.icon {
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.6;
+  border-radius: 6px;
+}
+button.icon:hover { background: var(--surface); color: var(--text); }
 .column h2 { color: var(--c); }
 .count {
   font-size: 0.8rem;
@@ -185,3 +227,33 @@ button.link { border: 0; padding: 0; background: none; color: var(--danger); fon
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: none; }
 }
+
+/* Home: minhas retrospectivas */
+.home-stack { display: grid; gap: 16px; width: 100%; max-width: 420px; }
+.my-boards { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.my-boards a {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+}
+.my-boards a:hover { border-color: var(--accent); }
+
+/* Super admin */
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.sa-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.sa-table th, .sa-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sa-table th { color: var(--muted); font-weight: 600; font-size: 0.8rem; white-space: nowrap; }
+.sa-table tr:last-child td { border-bottom: 0; }
+.sa-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.sa-table .actions { white-space: nowrap; display: flex; gap: 14px; align-items: center; justify-content: flex-end; }
+.sa-table .actions a { font-size: 0.85rem; }
+.sa-table .actions button.link { font-size: 0.85rem; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+.pill-waiting { background: var(--gray-bg); color: var(--gray); }
+.pill-running { background: var(--good-bg); color: var(--good); }
+.pill-ended { background: var(--improve-bg); color: var(--improve); }

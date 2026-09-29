@@ -18,12 +18,10 @@ import { CSS } from '@dnd-kit/utilities'
 import { signIn } from './firebase.js'
 import * as data from './data.js'
 import { boardLink } from './routes.js'
+import { PHASE_LABEL, endsAt, formatTime, timerPhase, useNow } from './timer.js'
 import { getAdminToken, getName, setName as saveName } from './identity.js'
 
-const COLUMNS = [
-  { key: 'good', title: 'Pontos positivos', placeholder: 'O que funcionou bem?' },
-  { key: 'improve', title: 'Pontos a melhorar', placeholder: 'O que podemos melhorar?' },
-]
+const PLACEHOLDERS = { good: 'O que funcionou bem?', improve: 'O que podemos melhorar?' }
 const ONLINE_WINDOW_MS = 75_000
 
 export default function Board({ boardId }) {
@@ -72,6 +70,7 @@ export default function Board({ boardId }) {
   if (!board) return <main className="home muted">Conectando…</main>
 
   const needsName = !board.anonymous && !name.trim()
+  const columns = data.columnsOf(board)
   const phase = timerPhase(board.timer, now)
   const online = beats.filter((t) => now - t < ONLINE_WINDOW_MS).length
   const byColumn = (column) =>
@@ -142,6 +141,8 @@ export default function Board({ boardId }) {
           key={board.title}
           board={board}
           onUpdate={(patch) => run(data.updateBoard(boardId, patch))}
+          onAddColumn={(title) => run(data.addColumn(board, title))}
+          canAddColumn={columns.length < data.MAX_COLUMNS}
           onClose={() => run(data.closeBoard(boardId))}
         />
       )}
@@ -152,21 +153,32 @@ export default function Board({ boardId }) {
       )}
 
       <div className="columns">
-        {COLUMNS.map((col) => (
+        {columns.map((col) => (
           <Column
-            key={col.key}
+            key={col.id}
             column={col}
-            cards={byColumn(col.key)}
+            cards={byColumn(col.id)}
             canAdd={!needsName && phase === 'running'}
             lockedText={LOCKED_TEXT[phase]}
             isAdmin={isAdmin}
             running={phase === 'running'}
             onEdit={(cardId, text) => run(data.editCard(boardId, cardId, text))}
             onAdd={(text) =>
-              run(data.addCard(boardId, uid, { column: col.key, text, author: board.anonymous ? null : name }))
+              run(data.addCard(boardId, uid, { column: col.id, text, author: board.anonymous ? null : name }))
             }
             onDelete={(cardId) => run(data.deleteCard(boardId, cardId))}
-            onMove={(a, b) => moveCard(col.key, a, b)}
+            onMove={(a, b) => moveCard(col.id, a, b)}
+            onRename={(title) => run(data.renameColumn(board, col.id, title))}
+            onRemove={() => {
+              const ids = byColumn(col.id).map((c) => c.id)
+              const detail = ids.length
+                ? ` ${ids.length} ${ids.length === 1 ? 'card será apagado' : 'cards serão apagados'}.`
+                : ''
+              if (window.confirm(`Remover a coluna "${col.title}"?${detail}`)) {
+                run(data.removeColumn(board, col.id, ids))
+              }
+            }}
+            canRemove={columns.length > 1}
           />
         ))}
       </div>
@@ -179,37 +191,13 @@ const LOCKED_TEXT = {
   ended: 'Tempo encerrado',
 }
 
-function useNow() {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250)
-    return () => clearInterval(id)
-  }, [])
-  return now
-}
 
-const endsAt = (timer) => timer.startedAt.toMillis() + timer.durationSec * 1000
-
-function timerPhase(timer, now) {
-  if (!timer.startedAt) return 'waiting'
-  if (timer.stopped) return 'ended'
-  return now < endsAt(timer) ? 'running' : 'ended'
-}
-
-function formatTime(totalSec) {
-  const sec = Math.max(0, Math.ceil(totalSec))
-  return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`
-}
 
 function TimerBanner({ timer, phase, now, isAdmin, actions }) {
   const [minutes, setMinutes] = useState(String(timer.durationSec / 60))
   const shown =
     phase === 'running' ? (endsAt(timer) - now) / 1000 : phase === 'ended' ? 0 : timer.durationSec
-  const label = {
-    waiting: 'Aguardando o início',
-    running: 'Tempo restante',
-    ended: 'Tempo encerrado',
-  }[phase]
+  const label = PHASE_LABEL[phase]
   const urgent = phase === 'running' && shown <= 30
 
   return (
@@ -249,7 +237,7 @@ function TimerBanner({ timer, phase, now, isAdmin, actions }) {
   )
 }
 
-function AdminBar({ board, onUpdate, onClose }) {
+function AdminBar({ board, onUpdate, onAddColumn, canAddColumn, onClose }) {
   const [title, setTitle] = useState(board.title)
   const [copied, setCopied] = useState('')
   const [closing, setClosing] = useState(false)
@@ -285,6 +273,16 @@ function AdminBar({ board, onUpdate, onClose }) {
         />
         <span>Anônimo</span>
       </label>
+      <button
+        disabled={!canAddColumn}
+        title={canAddColumn ? '' : `Máximo de ${data.MAX_COLUMNS} colunas`}
+        onClick={() => {
+          const name = window.prompt('Nome da nova coluna:')?.trim()
+          if (name) onAddColumn(name)
+        }}
+      >
+        + Coluna
+      </button>
       <button onClick={() => copy('time', teamLink)}>
         {copied === 'time' ? 'Copiado!' : 'Copiar link do time'}
       </button>
@@ -311,7 +309,21 @@ function AdminBar({ board, onUpdate, onClose }) {
   )
 }
 
-function Column({ column, cards, canAdd, lockedText, isAdmin, running, onEdit, onAdd, onDelete, onMove }) {
+function Column({
+  column,
+  cards,
+  canAdd,
+  lockedText,
+  isAdmin,
+  running,
+  canRemove,
+  onEdit,
+  onAdd,
+  onDelete,
+  onMove,
+  onRename,
+  onRemove,
+}) {
   const [text, setText] = useState('')
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -327,16 +339,41 @@ function Column({ column, cards, canAdd, lockedText, isAdmin, running, onEdit, o
   }
 
   return (
-    <section className={`column column-${column.key}`}>
+    <section className={`column col-${column.color}`}>
       <h2>
-        {column.title} <span className="count">{cards.length}</span>
+        <span className="column-title">{column.title}</span> <span className="count">{cards.length}</span>
+        {isAdmin && (
+          <span className="column-actions">
+            <button
+              className="icon"
+              title="Renomear coluna"
+              aria-label={`Renomear coluna ${column.title}`}
+              onClick={() => {
+                const name = window.prompt('Novo nome da coluna:', column.title)?.trim()
+                if (name && name !== column.title) onRename(name)
+              }}
+            >
+              ✎
+            </button>
+            {canRemove && (
+              <button
+                className="icon"
+                title="Remover coluna"
+                aria-label={`Remover coluna ${column.title}`}
+                onClick={onRemove}
+              >
+                ×
+              </button>
+            )}
+          </span>
+        )}
       </h2>
       <form onSubmit={submit} className="add">
         <textarea
           value={text}
           rows={2}
           maxLength={500}
-          placeholder={canAdd || !lockedText ? column.placeholder : lockedText}
+          placeholder={canAdd || !lockedText ? PLACEHOLDERS[column.id] ?? 'Escreva um card…' : lockedText}
           disabled={!canAdd}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

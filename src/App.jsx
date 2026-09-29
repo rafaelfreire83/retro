@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Home from './Home.jsx'
 import Board from './Board.jsx'
+import SuperAdmin from './SuperAdmin.jsx'
 import { configured } from './firebase.js'
 import { parseRoute } from './routes.js'
 import { setAdminToken } from './identity.js'
@@ -12,14 +13,14 @@ function readRoute() {
     setAdminToken(route.boardId, route.adminToken)
     window.history.replaceState(null, '', `#/b/${route.boardId}`)
   }
-  return route.boardId
+  return route.isSuper ? 'super' : route.boardId
 }
 
 export default function App() {
-  const [boardId, setBoardId] = useState(readRoute)
+  const [view, setView] = useState(readRoute)
 
   useEffect(() => {
-    const onChange = () => setBoardId(readRoute())
+    const onChange = () => setView(readRoute())
     window.addEventListener('hashchange', onChange)
     return () => window.removeEventListener('hashchange', onChange)
   }, [])
@@ -36,5 +37,6 @@ export default function App() {
       </main>
     )
   }
-  return boardId ? <Board key={boardId} boardId={boardId} /> : <Home />
+  if (view === 'super') return <SuperAdmin />
+  return view ? <Board key={view} boardId={view} /> : <Home />
 }

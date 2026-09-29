@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
   increment,
@@ -17,11 +18,24 @@ import {
 import { db, signIn } from './firebase.js'
 
 const DEFAULT_MINUTES = 5
+export const MAX_COLUMNS = 8
+export const DEFAULT_COLUMNS = {
+  good: { title: 'Pontos positivos', color: 'good', order: 0 },
+  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1 },
+}
+const EXTRA_COLORS = ['blue', 'purple', 'pink', 'teal', 'yellow', 'gray']
 // Lotes pequenos para caber no limite de leituras das regras por batch
 const CHUNK = 10
 
-const boardRef = (id) => doc(db, 'boards', id)
-const sub = (id, name) => collection(db, 'boards', id, name)
+const boardRef = (id, fs = db) => doc(fs, 'boards', id)
+const sub = (id, name, fs = db) => collection(fs, 'boards', id, name)
+
+// Colunas do quadro em ordem (quadros antigos não têm o campo e usam as padrão)
+export function columnsOf(board) {
+  return Object.entries(board.columns ?? DEFAULT_COLUMNS)
+    .map(([id, col]) => ({ id, ...col }))
+    .sort((a, b) => a.order - b.order)
+}
 
 export const toSeconds = (minutes) =>
   Math.round(Math.max(1, Math.min(120, Number(minutes) || DEFAULT_MINUTES)) * 60)
@@ -40,6 +54,8 @@ export async function createBoard({ title, anonymous, minutes }) {
     title: title.trim().slice(0, 120) || 'Retrospectiva',
     anonymous: Boolean(anonymous),
     createdAt: serverTimestamp(),
+    createdBy: user.uid,
+    columns: DEFAULT_COLUMNS,
     timer: { durationSec: toSeconds(minutes), startedAt: null, stopped: false },
   })
   batch.set(doc(ref, 'private', 'admin'), { token })
@@ -71,6 +87,57 @@ export function watchBoard(boardId, onData, onMissing) {
     },
     onMissing,
   )
+}
+
+// Quadros criados neste navegador (o login anônimo fica salvo entre visitas)
+export async function watchMyBoards(onData) {
+  const user = await signIn()
+  return onSnapshot(query(collection(db, 'boards'), where('createdBy', '==', user.uid)), (snap) =>
+    onData(
+      snap.docs
+        .map((d) => ({ id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }))
+        .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis()),
+    ),
+  )
+}
+
+export function addColumn(board, title) {
+  const columns = columnsOf(board)
+  const used = new Set(columns.map((c) => c.color))
+  const color = EXTRA_COLORS.find((c) => !used.has(c)) ?? EXTRA_COLORS[columns.length % EXTRA_COLORS.length]
+  const order = Math.max(...columns.map((c) => c.order)) + 1
+  const id = doc(collection(db, 'x')).id.slice(0, 8)
+  return updateBoard(board.id, {
+    columns: { ...toMap(columns), [id]: { title: title.trim().slice(0, 40), color, order } },
+  })
+}
+
+export function renameColumn(board, columnId, title) {
+  const columns = toMap(columnsOf(board))
+  columns[columnId] = { ...columns[columnId], title: title.trim().slice(0, 40) }
+  return updateBoard(board.id, { columns })
+}
+
+// Apaga os cards da coluna e depois a própria coluna
+export async function removeColumn(board, columnId, cardIds) {
+  await deleteCardsAndOwners(board.id, cardIds)
+  const columns = toMap(columnsOf(board).filter((c) => c.id !== columnId))
+  await updateBoard(board.id, { columns })
+}
+
+function toMap(columns) {
+  return Object.fromEntries(columns.map(({ id, title, color, order }) => [id, { title, color, order }]))
+}
+
+async function deleteCardsAndOwners(boardId, cardIds, fs = db) {
+  for (let i = 0; i < cardIds.length; i += CHUNK) {
+    const batch = writeBatch(fs)
+    for (const id of cardIds.slice(i, i + CHUNK)) {
+      batch.delete(doc(sub(boardId, 'cards', fs), id))
+      batch.delete(doc(sub(boardId, 'owners', fs), id))
+    }
+    await batch.commit()
+  }
 }
 
 export function watchCards(boardId, onData) {
@@ -128,30 +195,51 @@ export const startTimer = (boardId, minutes) =>
 export const addMinute = (boardId) => updateBoard(boardId, { 'timer.durationSec': increment(60) })
 export const stopTimer = (boardId) => updateBoard(boardId, { 'timer.stopped': true })
 
-// Encerrar apaga tudo: cards, donos, presença, admins e o próprio quadro
-export async function closeBoard(boardId) {
-  const cards = await getDocs(sub(boardId, 'cards'))
-  const presence = await getDocs(sub(boardId, 'presence'))
-  const admins = await getDocs(sub(boardId, 'admins'))
-  const cardIds = cards.docs.map((d) => d.id)
-  for (let i = 0; i < cardIds.length; i += CHUNK) {
-    const batch = writeBatch(db)
-    for (const id of cardIds.slice(i, i + CHUNK)) {
-      batch.delete(doc(sub(boardId, 'cards'), id))
-      batch.delete(doc(sub(boardId, 'owners'), id))
-    }
-    await batch.commit()
-  }
+// Encerrar apaga tudo: cards, donos, presença, admins e o próprio quadro.
+// `fs` permite que o super admin encerre usando a conexão dele.
+export async function closeBoard(boardId, fs = db) {
+  const cards = await getDocs(sub(boardId, 'cards', fs))
+  const presence = await getDocs(sub(boardId, 'presence', fs))
+  const admins = await getDocs(sub(boardId, 'admins', fs))
+  await deleteCardsAndOwners(boardId, cards.docs.map((d) => d.id), fs)
   for (let i = 0; i < presence.docs.length; i += CHUNK) {
-    const batch = writeBatch(db)
+    const batch = writeBatch(fs)
     for (const d of presence.docs.slice(i, i + CHUNK)) batch.delete(d.ref)
     await batch.commit()
   }
-  const batch = writeBatch(db)
-  batch.delete(doc(sub(boardId, 'private'), 'admin'))
+  const batch = writeBatch(fs)
+  batch.delete(doc(sub(boardId, 'private', fs), 'admin'))
   for (const d of admins.docs) batch.delete(d.ref)
-  batch.delete(boardRef(boardId))
+  batch.delete(boardRef(boardId, fs))
   await batch.commit()
+}
+
+// --- Super admin ---
+
+export function watchAllBoards(fs, onData, onError) {
+  return onSnapshot(
+    collection(fs, 'boards'),
+    (snap) =>
+      onData(
+        snap.docs
+          .map((d) => ({ id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }))
+          .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)),
+      ),
+    onError,
+  )
+}
+
+export async function boardStats(fs, boardId) {
+  const since = new Date(Date.now() - 75_000)
+  const [cards, online] = await Promise.all([
+    getCountFromServer(sub(boardId, 'cards', fs)),
+    getCountFromServer(query(sub(boardId, 'presence', fs), where('lastSeen', '>', since))),
+  ])
+  return { cards: cards.data().count, online: online.data().count }
+}
+
+export async function readAdminToken(fs, boardId) {
+  return (await getDoc(doc(sub(boardId, 'private', fs), 'admin'))).get('token')
 }
 
 // Presença: cada navegador grava um batimento com o horário do servidor.

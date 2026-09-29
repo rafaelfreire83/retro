@@ -1,8 +1,8 @@
 rules_version = '2';
 
 // Estrutura:
-//   boards/{b}                 título, anonimato e timer (público para quem tem o link)
-//   boards/{b}/private/admin   token do link de admin (ninguém lê)
+//   boards/{b}                 título, anonimato, colunas e timer (público para quem tem o link)
+//   boards/{b}/private/admin   token do link de admin (só o super admin lê)
 //   boards/{b}/admins/{uid}    quem é admin do quadro
 //   boards/{b}/cards/{c}       cards (sem dono gravado, para não quebrar o anonimato)
 //   boards/{b}/owners/{c}      dono de cada card (cada um só lê os próprios)
@@ -15,6 +15,14 @@ service cloud.firestore {
 
     function textOk(value, min, max) {
       return value is string && value.size() >= min && value.size() <= max;
+    }
+
+    // Super admin: só a conta Google do dono do sistema
+    function isSuperAdmin() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email == 'rafaelsfreire83@gmail.com'
+        && request.auth.token.email_verified == true;
     }
 
     match /boards/{b} {
@@ -33,18 +41,23 @@ service cloud.firestore {
           && t.stopped is bool
           && (t.startedAt == null || t.startedAt is timestamp);
       }
+      function columnsOk(d) {
+        return !('columns' in d) || (d.columns is map && d.columns.size() >= 1 && d.columns.size() <= 8);
+      }
       function boardFieldsOk(d) {
-        return d.keys().hasOnly(['title', 'anonymous', 'createdAt', 'timer'])
-          && textOk(d.title, 1, 120) && d.anonymous is bool && timerOk(d.timer);
+        return d.keys().hasOnly(['title', 'anonymous', 'createdAt', 'createdBy', 'columns', 'timer'])
+          && textOk(d.title, 1, 120) && d.anonymous is bool && timerOk(d.timer) && columnsOk(d);
       }
 
       allow get: if signedIn();
-      allow list: if false;
+      // Cada um lista os quadros que criou; o super admin lista todos
+      allow list: if isSuperAdmin() || (signedIn() && resource.data.createdBy == request.auth.uid);
 
       // O quadro nasce junto com o token de admin e o primeiro admin (mesmo batch)
       allow create: if signedIn()
         && boardFieldsOk(request.resource.data)
         && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.timer.startedAt == null
         && existsAfter(path('private', 'admin'))
         && existsAfter(path('admins', request.auth.uid));
@@ -53,10 +66,11 @@ service cloud.firestore {
       allow update: if signedIn() && isAdmin()
         && boardFieldsOk(request.resource.data)
         && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null)
         && (request.resource.data.timer.startedAt == resource.data.timer.startedAt
           || request.resource.data.timer.startedAt == request.time);
 
-      allow delete: if signedIn() && isAdmin();
+      allow delete: if signedIn() && (isAdmin() || isSuperAdmin());
 
       function board() {
         return get(boardPath()).data;
@@ -68,21 +82,22 @@ service cloud.firestore {
       }
 
       match /private/admin {
-        allow read: if false;
+        // O super admin lê o token para abrir o quadro como admin
+        allow read: if isSuperAdmin();
         allow create: if signedIn()
           && !exists(boardPath()) && existsAfter(boardPath())
           && request.resource.data.keys().hasOnly(['token'])
           && textOk(request.resource.data.token, 20, 100);
-        allow delete: if signedIn() && isAdmin();
+        allow delete: if signedIn() && (isAdmin() || isSuperAdmin());
       }
 
       match /admins/{uid} {
-        allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || isSuperAdmin());
         // Vira admin quem apresentar o token do link de admin
         allow create: if signedIn() && request.auth.uid == uid
           && request.resource.data.keys().hasOnly(['token'])
           && request.resource.data.token == getAfter(path('private', 'admin')).data.token;
-        allow delete: if signedIn() && isAdmin();
+        allow delete: if signedIn() && (isAdmin() || isSuperAdmin());
       }
 
       match /owners/{c} {
@@ -92,7 +107,7 @@ service cloud.firestore {
           && request.resource.data.uid == request.auth.uid
           && !exists(path('cards', c)) && existsAfter(path('cards', c));
         allow delete: if signedIn()
-          && (resource.data.uid == request.auth.uid || isAdmin())
+          && (resource.data.uid == request.auth.uid || isAdmin() || isSuperAdmin())
           && !existsAfter(path('cards', c));
       }
 
@@ -108,14 +123,18 @@ service cloud.firestore {
           return (running() && isOwner()) || (!running() && isAdmin());
         }
         function canDelete() {
-          return isAdmin() || (running() && isOwner());
+          return isAdmin() || isSuperAdmin() || (running() && isOwner());
+        }
+        // Quadros criados antes das colunas personalizadas usam as duas padrão
+        function columnIds() {
+          return 'columns' in board() ? board().columns.keys() : ['good', 'improve'];
         }
 
         allow read: if signedIn();
 
         allow create: if signedIn() && running()
           && request.resource.data.keys().hasOnly(['column', 'text', 'author', 'order', 'createdAt'])
-          && request.resource.data.column in ['good', 'improve']
+          && request.resource.data.column in columnIds()
           && textOk(request.resource.data.text, 1, 500)
           && (board().anonymous
             ? request.resource.data.author == null
@@ -138,7 +157,7 @@ service cloud.firestore {
         allow create, update: if signedIn() && request.auth.uid == uid
           && request.resource.data.keys().hasOnly(['lastSeen'])
           && request.resource.data.lastSeen == request.time;
-        allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow delete: if signedIn() && (request.auth.uid == uid || isAdmin() || isSuperAdmin());
       }
     }
   }

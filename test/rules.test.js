@@ -8,12 +8,16 @@ import {
 } from '@firebase/rules-unit-testing'
 import {
   Timestamp,
+  collection,
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore'
 
@@ -30,17 +34,29 @@ after(() => env.cleanup())
 beforeEach(() => env.clearFirestore())
 
 const db = (uid) => env.authenticatedContext(uid).firestore()
+const google = (uid, email) =>
+  env
+    .authenticatedContext(uid, { email, email_verified: true, firebase: { sign_in_provider: 'google.com' } })
+    .firestore()
+const superDb = () => google('super', 'rafaelsfreire83@gmail.com')
 
-function newBoard(fs, uid, { anonymous = false, token = TOKEN } = {}) {
+const COLUMNS = {
+  good: { title: 'Pontos positivos', color: 'good', order: 0 },
+  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1 },
+}
+
+function newBoard(fs, uid, { anonymous = false, token = TOKEN, id = 'b1', createdBy = uid } = {}) {
   const b = writeBatch(fs)
-  b.set(doc(fs, 'boards/b1'), {
+  b.set(doc(fs, `boards/${id}`), {
     title: 'Retro',
     anonymous,
     createdAt: serverTimestamp(),
+    createdBy,
+    columns: COLUMNS,
     timer: { durationSec: 300, startedAt: null, stopped: false },
   })
-  b.set(doc(fs, 'boards/b1/private/admin'), { token })
-  b.set(doc(fs, `boards/b1/admins/${uid}`), { token })
+  b.set(doc(fs, `boards/${id}/private/admin`), { token })
+  b.set(doc(fs, `boards/${id}/admins/${uid}`), { token })
   return b.commit()
 }
 
@@ -74,10 +90,29 @@ describe('quadro', () => {
     await assertSucceeds(newBoard(db('admin'), 'admin'))
   })
 
-  test('não dá para listar quadros', async () => {
+  test('não dá para listar todos os quadros; só os que eu criei', async () => {
     await newBoard(db('admin'), 'admin')
-    const { getDocs, collection } = await import('firebase/firestore')
     await assertFails(getDocs(collection(db('x'), 'boards')))
+    await assertSucceeds(getDocs(query(collection(db('admin'), 'boards'), where('createdBy', '==', 'admin'))))
+    await assertFails(getDocs(query(collection(db('x'), 'boards'), where('createdBy', '==', 'admin'))))
+  })
+
+  test('não dá para criar quadro em nome de outra pessoa', async () => {
+    await assertFails(newBoard(db('admin'), 'admin', { createdBy: 'outro' }))
+  })
+
+  test('admin adiciona e remove colunas; participante não', async () => {
+    await newBoard(db('admin'), 'admin')
+    const extra = { ...COLUMNS, x1: { title: 'Ideias', color: 'blue', order: 2 } }
+    await assertFails(updateDoc(doc(db('p'), 'boards/b1'), { columns: extra }))
+    await assertSucceeds(updateDoc(doc(db('admin'), 'boards/b1'), { columns: extra }))
+    await assertSucceeds(updateDoc(doc(db('admin'), 'boards/b1'), { columns: { x1: extra.x1 } }))
+    await assertFails(updateDoc(doc(db('admin'), 'boards/b1'), { columns: {} }))
+  })
+
+  test('não dá para trocar o criador do quadro', async () => {
+    await newBoard(db('admin'), 'admin')
+    await assertFails(updateDoc(doc(db('admin'), 'boards/b1'), { createdBy: 'outro' }))
   })
 
   test('ninguém lê o token de admin', async () => {
@@ -211,9 +246,64 @@ describe('cards e tempo', () => {
     await assertSucceeds(end.commit())
   })
 
+  test('card só entra em coluna que existe', async () => {
+    await running()
+    await assertFails(addCard(db('p'), 'p', 'c1', { column: 'inexistente' }))
+    await updateDoc(doc(db('admin'), 'boards/b1'), {
+      columns: { ...COLUMNS, x1: { title: 'Ideias', color: 'blue', order: 2 } },
+    })
+    await assertSucceeds(addCard(db('p'), 'p', 'c2', { column: 'x1' }))
+  })
+
   test('texto vazio ou longo demais é recusado', async () => {
     await running()
     await assertFails(addCard(db('p'), 'p', 'c1', { text: '' }))
     await assertFails(addCard(db('p'), 'p', 'c2', { text: 'x'.repeat(501) }))
+  })
+})
+
+describe('super admin', () => {
+  beforeEach(async () => {
+    await newBoard(db('a1'), 'a1', { id: 'b1' })
+    await newBoard(db('a2'), 'a2', { id: 'b2' })
+  })
+
+  test('lista todos os quadros e lê o token de admin', async () => {
+    const snap = await assertSucceeds(getDocs(collection(superDb(), 'boards')))
+    if (snap.size !== 2) throw new Error(`esperava 2 quadros, veio ${snap.size}`)
+    await assertSucceeds(getDoc(doc(superDb(), 'boards/b1/private/admin')))
+  })
+
+  test('outra conta Google não é super admin', async () => {
+    const other = google('x', 'alguem@gmail.com')
+    await assertFails(getDocs(collection(other, 'boards')))
+    await assertFails(getDoc(doc(other, 'boards/b1/private/admin')))
+  })
+
+  test('login anônimo não vira super admin mesmo com o e-mail no token', async () => {
+    const fake = env
+      .authenticatedContext('f', {
+        email: 'rafaelsfreire83@gmail.com',
+        email_verified: true,
+        firebase: { sign_in_provider: 'anonymous' },
+      })
+      .firestore()
+    await assertFails(getDocs(collection(fake, 'boards')))
+  })
+
+  test('encerra o quadro de outra pessoa', async () => {
+    await setTimer({ durationSec: 300, startedAt: Timestamp.now(), stopped: false })
+    await addCard(db('p'), 'p', 'c1')
+    const fs = superDb()
+    const cards = writeBatch(fs)
+    cards.delete(doc(fs, 'boards/b1/cards/c1'))
+    cards.delete(doc(fs, 'boards/b1/owners/c1'))
+    await assertSucceeds(cards.commit())
+    await assertSucceeds(getDocs(collection(fs, 'boards/b1/admins')))
+    const end = writeBatch(fs)
+    end.delete(doc(fs, 'boards/b1/private/admin'))
+    end.delete(doc(fs, 'boards/b1/admins/a1'))
+    end.delete(doc(fs, 'boards/b1'))
+    await assertSucceeds(end.commit())
   })
 })

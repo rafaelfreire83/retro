@@ -3,6 +3,7 @@ export function parseRoute() {
   const [path, search = ''] = window.location.hash.replace(/^#/, '').split('?')
   const match = path.match(/^\/b\/([\w-]+)/)
   return {
+    isSuper: path === '/super',
     boardId: match?.[1] ?? null,
     adminToken: new URLSearchParams(search).get('admin'),
   }

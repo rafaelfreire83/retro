@@ -23,7 +23,20 @@ Quadro de retrospectiva em tempo real: **Pontos positivos** e **Pontos a melhora
    qualquer um). Com o tempo encerrado, só o admin edita ou remove.
 6. O admin pode renomear, ligar/desligar o anonimato e copiar o **link de admin** para abrir
    em outro dispositivo.
-7. **Encerrar retrospectiva** apaga o quadro e todos os cards; o link deixa de funcionar.
+7. **Colunas:** o quadro começa com "Pontos positivos" e "Pontos a melhorar". O admin adiciona
+   colunas com **+ Coluna** (até 8), renomeia com ✎ e remove com × (com confirmação — os cards
+   da coluna são apagados).
+8. **Encerrar retrospectiva** apaga o quadro e todos os cards; o link deixa de funcionar.
+
+Qualquer pessoa pode criar a própria retrospectiva e ser admin dela. A página inicial mostra
+**Minhas retrospectivas** — as criadas naquele navegador — para voltar como admin depois.
+
+### Super Admin
+
+Em [`#/super`](https://rafaelfreire83.github.io/retro/#/super), com login Google, o dono do
+sistema vê todas as retrospectivas abertas (status, colunas, cards, pessoas online) e pode
+abrir, entrar como admin ou encerrar qualquer uma. O acesso é liberado pelas regras do
+Firestore só para o e-mail definido em `isSuperAdmin()` em `firestore.rules`.
 
 No modo anônimo o nome não é gravado e o dono de cada card fica num registro que só o
 próprio autor consegue ler — por isso cada um vê "Você" só nos seus cards.
@@ -39,7 +52,8 @@ próprio autor consegue ler — por isso cada um vê "Você" só nos seus cards.
    (Ou, com o CLI: `npx firebase login`, `npx firebase use --add` e `npm run deploy:rules`.)
 5. **Configurações do projeto > Seus apps > Web (`</>`)**: registre um app e copie
    `apiKey`, `authDomain`, `projectId` e `appId`.
-6. **Authentication > Configurações > Domínios autorizados**: adicione `<usuario>.github.io`.
+6. **Authentication > Método de login**: ative também **Google** (usado só pelo Super Admin).
+7. **Authentication > Configurações > Domínios autorizados**: adicione `<usuario>.github.io`.
 
 ### 2. GitHub Pages
 
