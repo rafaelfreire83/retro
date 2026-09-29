@@ -13,6 +13,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   query,
   serverTimestamp,
   setDoc,
@@ -41,8 +42,8 @@ const google = (uid, email) =>
 const superDb = () => google('super', 'rafaelsfreire83@gmail.com')
 
 const COLUMNS = {
-  good: { title: 'Pontos positivos', color: 'good', order: 0 },
-  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1 },
+  good: { title: 'Pontos positivos', color: 'good', order: 0, voting: false },
+  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1, voting: true },
 }
 
 function newBoard(fs, uid, { anonymous = false, token = TOKEN, id = 'b1', createdBy = uid } = {}) {
@@ -193,11 +194,12 @@ describe('cards e tempo', () => {
     await assertFails(getDoc(doc(db('admin'), 'boards/b1/owners/c1')))
   })
 
-  test('qualquer um reordena', async () => {
+  test('só o admin reordena os cards', async () => {
     await running()
     await addCard(db('p'), 'p', 'c1')
-    await ended()
-    await assertSucceeds(updateDoc(doc(db('outro'), 'boards/b1/cards/c1'), { order: 5 }))
+    await assertFails(updateDoc(doc(db('p'), 'boards/b1/cards/c1'), { order: 5 }))
+    await assertFails(updateDoc(doc(db('outro'), 'boards/b1/cards/c1'), { order: 5 }))
+    await assertSucceeds(updateDoc(doc(db('admin'), 'boards/b1/cards/c1'), { order: 5 }))
   })
 
   test('tempo correndo: autor edita e remove; admin remove mas não edita', async () => {
@@ -305,5 +307,83 @@ describe('super admin', () => {
     end.delete(doc(fs, 'boards/b1/admins/a1'))
     end.delete(doc(fs, 'boards/b1'))
     await assertSucceeds(end.commit())
+  })
+})
+
+function vote(fs, uid, cardId, on = true) {
+  const b = writeBatch(fs)
+  const v = doc(fs, `boards/b1/votes/${cardId}_${uid}`)
+  if (on) b.set(v, { card: cardId, uid })
+  else b.delete(v)
+  b.update(doc(fs, `boards/b1/cards/${cardId}`), { votes: increment(on ? 1 : -1) })
+  return b.commit()
+}
+
+describe('votação', () => {
+  beforeEach(async () => {
+    await newBoard(db('admin'), 'admin')
+    await running()
+    await addCard(db('p'), 'p', 'm1', { column: 'improve', votes: 0 })
+    await addCard(db('p'), 'p', 'g1', { column: 'good', votes: 0 })
+  })
+
+  test('todos votam na coluna com votação; um voto por pessoa', async () => {
+    await assertSucceeds(vote(db('a'), 'a', 'm1'))
+    await assertSucceeds(vote(db('b'), 'b', 'm1'))
+    await assertFails(vote(db('a'), 'a', 'm1'))
+    const snap = await getDoc(doc(db('a'), 'boards/b1/cards/m1'))
+    if (snap.get('votes') !== 2) throw new Error(`esperava 2 votos, veio ${snap.get('votes')}`)
+  })
+
+  test('tirar o voto desconta', async () => {
+    await vote(db('a'), 'a', 'm1')
+    await assertSucceeds(vote(db('a'), 'a', 'm1', false))
+    await assertFails(vote(db('b'), 'b', 'm1', false))
+  })
+
+  test('não dá para mexer no contador sem registrar o voto', async () => {
+    await assertFails(updateDoc(doc(db('a'), 'boards/b1/cards/m1'), { votes: 10 }))
+    await assertFails(updateDoc(doc(db('a'), 'boards/b1/cards/m1'), { votes: increment(1) }))
+  })
+
+  test('não dá para votar em nome de outra pessoa', async () => {
+    const fs = db('a')
+    const b = writeBatch(fs)
+    b.set(doc(fs, 'boards/b1/votes/m1_b'), { card: 'm1', uid: 'b' })
+    b.update(doc(fs, 'boards/b1/cards/m1'), { votes: increment(1) })
+    await assertFails(b.commit())
+  })
+
+  test('coluna sem votação não aceita voto', async () => {
+    await assertFails(vote(db('a'), 'a', 'g1'))
+  })
+
+  test('card não nasce com votos', async () => {
+    await assertFails(addCard(db('p'), 'p', 'm2', { column: 'improve', votes: 3 }))
+  })
+
+  test('card votado não pode ser apagado, nem pelo admin nem pelo autor', async () => {
+    await vote(db('a'), 'a', 'm1')
+    await assertFails(deleteDoc(doc(db('p'), 'boards/b1/cards/m1')))
+    await assertFails(deleteDoc(doc(db('admin'), 'boards/b1/cards/m1')))
+  })
+
+  test('encerrando a retrospectiva, o admin apaga cards votados e os votos', async () => {
+    await vote(db('a'), 'a', 'm1')
+    const fs = db('admin')
+    await assertSucceeds(updateDoc(doc(fs, 'boards/b1'), { closing: true }))
+    await assertSucceeds(getDocs(collection(fs, 'boards/b1/votes')))
+    const b = writeBatch(fs)
+    b.delete(doc(fs, 'boards/b1/cards/m1'))
+    b.delete(doc(fs, 'boards/b1/owners/m1'))
+    b.delete(doc(fs, 'boards/b1/votes/m1_a'))
+    await assertSucceeds(b.commit())
+  })
+
+  test('cada um só vê os próprios votos (o admin vê todos)', async () => {
+    await vote(db('a'), 'a', 'm1')
+    await assertSucceeds(getDoc(doc(db('a'), 'boards/b1/votes/m1_a')))
+    await assertFails(getDoc(doc(db('b'), 'boards/b1/votes/m1_a')))
+    await assertSucceeds(getDoc(doc(db('admin'), 'boards/b1/votes/m1_a')))
   })
 })

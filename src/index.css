@@ -181,7 +181,8 @@ button.link { border: 0; padding: 0; background: none; color: var(--danger); fon
 .col-yellow { --c: var(--yellow); --c-bg: var(--yellow-bg); }
 .col-gray { --c: var(--gray); --c-bg: var(--gray-bg); }
 .column-title { overflow-wrap: anywhere; }
-.column-actions { margin-left: auto; display: flex; gap: 2px; }
+.column-actions { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; }
+.column h2 { flex-wrap: wrap; }
 button.icon {
   padding: 0 6px;
   border: 0;
@@ -211,15 +212,37 @@ button.icon:hover { background: var(--surface); color: var(--text); }
   border: 1px solid var(--border);
   border-left: 3px solid var(--c);
   border-radius: 8px;
-  cursor: grab;
-  touch-action: none;
   animation: pop 0.2s ease-out;
 }
 .card.dragging { opacity: 0.85; box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); cursor: grabbing; position: relative; z-index: 1; }
 .card p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .card footer { display: flex; justify-content: space-between; align-items: center; min-height: 1em; }
 .card-actions { display: flex; gap: 12px; }
+.card.draggable { cursor: grab; touch-action: none; }
 .card.editing { cursor: default; }
+.card.top-voted { box-shadow: 0 0 0 2px var(--c); }
+.top-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--c);
+  color: var(--surface);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.card-actions { align-items: center; }
+button.vote {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+button.vote.voted { background: var(--c); border-color: var(--c); color: var(--surface); }
+.vote-hint { margin: -4px 0 12px; }
+button.icon:disabled { opacity: 0.3; cursor: default; background: none; }
+button.icon.on { color: var(--c); }
 .card textarea.edit { margin-bottom: 8px; }
 .empty { text-align: center; margin: 8px 0 0; }
 

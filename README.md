@@ -18,15 +18,19 @@ Quadro de retrospectiva em tempo real: **Pontos positivos** e **Pontos a melhora
    ninguém escreve. Durante a contagem (visível para todos) os cards ficam liberados; o admin
    pode dar **+1 min** ou **Parar**. Quando o tempo acaba a escrita trava, e dá para
    **Iniciar novamente**.
-4. Arraste os cards para reordenar — a ordem sincroniza para todos.
+4. Só o admin arrasta os cards para reordenar — a ordem sincroniza para todos.
 5. Com o tempo correndo, cada um edita e remove os próprios cards (o admin pode remover
    qualquer um). Com o tempo encerrado, só o admin edita ou remove.
 6. O admin pode renomear, ligar/desligar o anonimato e copiar o **link de admin** para abrir
    em outro dispositivo.
 7. **Colunas:** o quadro começa com "Pontos positivos" e "Pontos a melhorar". O admin adiciona
-   colunas com **+ Coluna** (até 8), renomeia com ✎ e remove com × (com confirmação — os cards
-   da coluna são apagados).
-8. **Encerrar retrospectiva** apaga o quadro e todos os cards; o link deixa de funcionar.
+   colunas com **+ Coluna** (até 8), muda de posição com ◀ ▶, renomeia com ✎ e remove com ×
+   (com confirmação — os cards da coluna são apagados).
+8. **Votação:** em "Pontos a melhorar" (e em qualquer coluna em que o admin ligar 🗳), cada
+   pessoa dá um voto por card (▲) para escolher o que atacar na próxima sprint. O mais votado
+   ganha destaque e o admin pode **Ordenar por votos**. Card votado não pode ser removido — nem a
+   coluna que tiver cards votados; eles só somem ao encerrar a retrospectiva.
+9. **Encerrar retrospectiva** apaga o quadro e todos os cards; o link deixa de funcionar.
 
 Qualquer pessoa pode criar a própria retrospectiva e ser admin dela. A página inicial mostra
 **Minhas retrospectivas** — as criadas naquele navegador — para voltar como admin depois.

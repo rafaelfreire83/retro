@@ -20,8 +20,8 @@ import { db, signIn } from './firebase.js'
 const DEFAULT_MINUTES = 5
 export const MAX_COLUMNS = 8
 export const DEFAULT_COLUMNS = {
-  good: { title: 'Pontos positivos', color: 'good', order: 0 },
-  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1 },
+  good: { title: 'Pontos positivos', color: 'good', order: 0, voting: false },
+  improve: { title: 'Pontos a melhorar', color: 'improve', order: 1, voting: true },
 }
 const EXTRA_COLORS = ['blue', 'purple', 'pink', 'teal', 'yellow', 'gray']
 // Lotes pequenos para caber no limite de leituras das regras por batch
@@ -33,7 +33,7 @@ const sub = (id, name, fs = db) => collection(fs, 'boards', id, name)
 // Colunas do quadro em ordem (quadros antigos não têm o campo e usam as padrão)
 export function columnsOf(board) {
   return Object.entries(board.columns ?? DEFAULT_COLUMNS)
-    .map(([id, col]) => ({ id, ...col }))
+    .map(([id, col]) => ({ id, ...col, voting: col.voting ?? id === 'improve' }))
     .sort((a, b) => a.order - b.order)
 }
 
@@ -126,7 +126,50 @@ export async function removeColumn(board, columnId, cardIds) {
 }
 
 function toMap(columns) {
-  return Object.fromEntries(columns.map(({ id, title, color, order }) => [id, { title, color, order }]))
+  return Object.fromEntries(
+    columns.map(({ id, title, color, order, voting }) => [id, { title, color, order, voting: Boolean(voting) }]),
+  )
+}
+
+// Troca a coluna de lugar com a vizinha (dir = -1 esquerda, +1 direita)
+export function moveColumn(board, columnId, dir) {
+  const columns = columnsOf(board)
+  const i = columns.findIndex((c) => c.id === columnId)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= columns.length) return Promise.resolve()
+  ;[columns[i], columns[j]] = [columns[j], columns[i]]
+  return updateBoard(board.id, { columns: toMap(columns.map((c, order) => ({ ...c, order }))) })
+}
+
+export function toggleColumnVoting(board, columnId) {
+  const columns = columnsOf(board).map((c) => (c.id === columnId ? { ...c, voting: !c.voting } : c))
+  return updateBoard(board.id, { columns: toMap(columns) })
+}
+
+// Voto: um documento por pessoa e card + o contador no card, no mesmo batch
+export function toggleVote(boardId, uid, cardId, voted) {
+  const batch = writeBatch(db)
+  const ref = doc(sub(boardId, 'votes'), `${cardId}_${uid}`)
+  if (voted) batch.delete(ref)
+  else batch.set(ref, { card: cardId, uid })
+  batch.update(doc(sub(boardId, 'cards'), cardId), { votes: increment(voted ? -1 : 1) })
+  return batch.commit()
+}
+
+export function watchMyVotes(boardId, uid, onData) {
+  return onSnapshot(query(sub(boardId, 'votes'), where('uid', '==', uid)), (snap) =>
+    onData(new Set(snap.docs.map((d) => d.get('card')))),
+  )
+}
+
+// Reordena a coluna do mais votado para o menos votado
+export async function sortByVotes(boardId, cards) {
+  const sorted = [...cards].sort((a, b) => (b.votes ?? 0) - (a.votes ?? 0) || a.order - b.order)
+  for (let i = 0; i < sorted.length; i += CHUNK) {
+    const batch = writeBatch(db)
+    sorted.slice(i, i + CHUNK).forEach((c, k) => batch.update(doc(sub(boardId, 'cards'), c.id), { order: i + k }))
+    await batch.commit()
+  }
 }
 
 async function deleteCardsAndOwners(boardId, cardIds, fs = db) {
@@ -162,6 +205,7 @@ export async function addCard(boardId, uid, { column, text, author }) {
     author: author?.trim().slice(0, 60) || null,
     order: Date.now(),
     createdAt: serverTimestamp(),
+    votes: 0,
   })
   batch.set(doc(sub(boardId, 'owners'), ref.id), { uid })
   await batch.commit()
@@ -198,14 +242,19 @@ export const stopTimer = (boardId) => updateBoard(boardId, { 'timer.stopped': tr
 // Encerrar apaga tudo: cards, donos, presença, admins e o próprio quadro.
 // `fs` permite que o super admin encerre usando a conexão dele.
 export async function closeBoard(boardId, fs = db) {
+  // Marca o encerramento: só assim as regras liberam apagar cards votados
+  await updateDoc(boardRef(boardId, fs), { closing: true })
+  const votes = await getDocs(sub(boardId, 'votes', fs))
   const cards = await getDocs(sub(boardId, 'cards', fs))
   const presence = await getDocs(sub(boardId, 'presence', fs))
   const admins = await getDocs(sub(boardId, 'admins', fs))
   await deleteCardsAndOwners(boardId, cards.docs.map((d) => d.id), fs)
-  for (let i = 0; i < presence.docs.length; i += CHUNK) {
-    const batch = writeBatch(fs)
-    for (const d of presence.docs.slice(i, i + CHUNK)) batch.delete(d.ref)
-    await batch.commit()
+  for (const list of [votes.docs, presence.docs]) {
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const batch = writeBatch(fs)
+      for (const d of list.slice(i, i + CHUNK)) batch.delete(d.ref)
+      await batch.commit()
+    }
   }
   const batch = writeBatch(fs)
   batch.delete(doc(sub(boardId, 'private', fs), 'admin'))

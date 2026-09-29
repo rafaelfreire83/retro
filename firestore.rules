@@ -7,6 +7,7 @@ rules_version = '2';
 //   boards/{b}/cards/{c}       cards (sem dono gravado, para não quebrar o anonimato)
 //   boards/{b}/owners/{c}      dono de cada card (cada um só lê os próprios)
 //   boards/{b}/presence/{uid}  batimento para contar quem está online
+//   boards/{b}/votes/{c_uid}   voto de uma pessoa num card (cada um só lê os próprios)
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -45,8 +46,9 @@ service cloud.firestore {
         return !('columns' in d) || (d.columns is map && d.columns.size() >= 1 && d.columns.size() <= 8);
       }
       function boardFieldsOk(d) {
-        return d.keys().hasOnly(['title', 'anonymous', 'createdAt', 'createdBy', 'columns', 'timer'])
-          && textOk(d.title, 1, 120) && d.anonymous is bool && timerOk(d.timer) && columnsOk(d);
+        return d.keys().hasOnly(['title', 'anonymous', 'createdAt', 'createdBy', 'columns', 'timer', 'closing'])
+          && textOk(d.title, 1, 120) && d.anonymous is bool && timerOk(d.timer) && columnsOk(d)
+          && d.get('closing', false) is bool;
       }
 
       allow get: if signedIn();
@@ -62,8 +64,8 @@ service cloud.firestore {
         && existsAfter(path('private', 'admin'))
         && existsAfter(path('admins', request.auth.uid));
 
-      // Só o admin altera; o início do tempo usa o relógio do servidor
-      allow update: if signedIn() && isAdmin()
+      // Só o admin (ou o super admin, ao encerrar) altera; o início do tempo usa o relógio do servidor
+      allow update: if signedIn() && (isAdmin() || isSuperAdmin())
         && boardFieldsOk(request.resource.data)
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null)
@@ -129,11 +131,32 @@ service cloud.firestore {
         function columnIds() {
           return 'columns' in board() ? board().columns.keys() : ['good', 'improve'];
         }
+        // Votação: ligada por coluna; "Pontos a melhorar" vem ligada por padrão
+        function votingOn(col) {
+          return 'columns' in board()
+            ? board().columns.get(col, {}).get('voting', col == 'improve') == true
+            : col == 'improve';
+        }
+        function votePath() {
+          return path('votes', c + '_' + request.auth.uid);
+        }
+        function voteChangeOk() {
+          let before = resource.data.get('votes', 0);
+          return votingOn(resource.data.column) && (
+            (!exists(votePath()) && existsAfter(votePath()) && request.resource.data.votes == before + 1)
+            || (exists(votePath()) && !existsAfter(votePath()) && request.resource.data.votes == before - 1)
+          );
+        }
+        // Card votado não pode ser apagado, a não ser encerrando a retrospectiva inteira
+        function notVotedOrClosing() {
+          return resource.data.get('votes', 0) == 0 || board().get('closing', false) == true;
+        }
 
         allow read: if signedIn();
 
         allow create: if signedIn() && running()
-          && request.resource.data.keys().hasOnly(['column', 'text', 'author', 'order', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['column', 'text', 'author', 'order', 'createdAt', 'votes'])
+          && request.resource.data.get('votes', 0) == 0
           && request.resource.data.column in columnIds()
           && textOk(request.resource.data.text, 1, 500)
           && (board().anonymous
@@ -143,13 +166,36 @@ service cloud.firestore {
           && request.resource.data.createdAt == request.time
           && getAfter(path('owners', c)).data.uid == request.auth.uid;
 
-        // Reordenar é livre para todos; editar o texto segue a regra do tempo
+        // Só o admin reordena; editar o texto segue a regra do tempo; votar é de todos
         allow update: if signedIn() && (
-          (changed().hasOnly(['order']) && request.resource.data.order is number)
+          (changed().hasOnly(['order']) && request.resource.data.order is number && isAdmin())
           || (changed().hasOnly(['text']) && textOk(request.resource.data.text, 1, 500) && canEdit())
+          || (changed().hasOnly(['votes']) && voteChangeOk())
         );
 
-        allow delete: if signedIn() && canDelete();
+        allow delete: if signedIn() && canDelete() && notVotedOrClosing();
+      }
+
+      match /votes/{v} {
+        function cardPath(id) {
+          return path('cards', id);
+        }
+        allow read: if signedIn()
+          && (resource.data.uid == request.auth.uid || isAdmin() || isSuperAdmin());
+        // O voto nasce junto com o +1 no contador do card (mesmo batch)
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['card', 'uid'])
+          && request.resource.data.uid == request.auth.uid
+          && v == request.resource.data.card + '_' + request.auth.uid
+          && getAfter(cardPath(request.resource.data.card)).data.votes
+            == get(cardPath(request.resource.data.card)).data.get('votes', 0) + 1;
+        // Tirar o voto desconta 1; ao encerrar, o admin apaga os votos dos cards já apagados
+        allow delete: if signedIn() && (
+          (resource.data.uid == request.auth.uid && exists(cardPath(resource.data.card))
+            && getAfter(cardPath(resource.data.card)).data.votes
+              == get(cardPath(resource.data.card)).data.get('votes', 0) - 1)
+          || ((isAdmin() || isSuperAdmin()) && !existsAfter(cardPath(resource.data.card)))
+        );
       }
 
       match /presence/{uid} {

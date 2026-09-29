@@ -29,6 +29,7 @@ export default function Board({ boardId }) {
   const [board, setBoard] = useState(null)
   const [cards, setCards] = useState([])
   const [mine, setMine] = useState(() => new Set())
+  const [myVotes, setMyVotes] = useState(() => new Set())
   const [isAdmin, setIsAdmin] = useState(false)
   const [beats, setBeats] = useState([])
   const [error, setError] = useState('')
@@ -51,6 +52,7 @@ export default function Board({ boardId }) {
       data.watchBoard(boardId, setBoard, missing),
       data.watchCards(boardId, setCards),
       data.watchMine(boardId, uid, setMine),
+      data.watchMyVotes(boardId, uid, setMyVotes),
       data.startPresence(boardId, uid, { onOnline: setBeats, onClockOffset: setClockOffset }),
     ]
     data.checkAdmin(boardId, uid, getAdminToken(boardId)).then(setIsAdmin)
@@ -76,7 +78,13 @@ export default function Board({ boardId }) {
   const byColumn = (column) =>
     cards
       .filter((c) => c.column === column)
-      .map((c) => ({ ...c, author: board.anonymous ? null : c.author, mine: mine.has(c.id) }))
+      .map((c) => ({
+        ...c,
+        author: board.anonymous ? null : c.author,
+        mine: mine.has(c.id),
+        votes: c.votes ?? 0,
+        voted: myVotes.has(c.id),
+      }))
 
   // Toda escrita passa pelas regras do Firestore; se recusar (ex.: o tempo acabou), avisa
   const run = (promise) =>
@@ -153,7 +161,7 @@ export default function Board({ boardId }) {
       )}
 
       <div className="columns">
-        {columns.map((col) => (
+        {columns.map((col, index) => (
           <Column
             key={col.id}
             column={col}
@@ -169,7 +177,20 @@ export default function Board({ boardId }) {
             onDelete={(cardId) => run(data.deleteCard(boardId, cardId))}
             onMove={(a, b) => moveCard(col.id, a, b)}
             onRename={(title) => run(data.renameColumn(board, col.id, title))}
+            onMoveColumn={(dir) => run(data.moveColumn(board, col.id, dir))}
+            isFirst={index === 0}
+            isLast={index === columns.length - 1}
+            onToggleVoting={() => run(data.toggleColumnVoting(board, col.id))}
+            onVote={(card) => run(data.toggleVote(boardId, uid, card.id, card.voted))}
+            onSortByVotes={() => run(data.sortByVotes(boardId, byColumn(col.id)))}
             onRemove={() => {
+              const voted = byColumn(col.id).filter((c) => c.votes > 0).length
+              if (voted) {
+                window.alert(
+                  `A coluna "${col.title}" tem ${voted} ${voted === 1 ? 'card votado' : 'cards votados'} e não pode ser removida.`,
+                )
+                return
+              }
               const ids = byColumn(col.id).map((c) => c.id)
               const detail = ids.length
                 ? ` ${ids.length} ${ids.length === 1 ? 'card será apagado' : 'cards serão apagados'}.`
@@ -317,12 +338,18 @@ function Column({
   isAdmin,
   running,
   canRemove,
+  isFirst,
+  isLast,
   onEdit,
   onAdd,
   onDelete,
   onMove,
   onRename,
   onRemove,
+  onMoveColumn,
+  onToggleVoting,
+  onVote,
+  onSortByVotes,
 }) {
   const [text, setText] = useState('')
   const sensors = useSensors(
@@ -344,6 +371,33 @@ function Column({
         <span className="column-title">{column.title}</span> <span className="count">{cards.length}</span>
         {isAdmin && (
           <span className="column-actions">
+            <button
+              className="icon"
+              title="Mover coluna para a esquerda"
+              aria-label={`Mover coluna ${column.title} para a esquerda`}
+              disabled={isFirst}
+              onClick={() => onMoveColumn(-1)}
+            >
+              ◀
+            </button>
+            <button
+              className="icon"
+              title="Mover coluna para a direita"
+              aria-label={`Mover coluna ${column.title} para a direita`}
+              disabled={isLast}
+              onClick={() => onMoveColumn(1)}
+            >
+              ▶
+            </button>
+            <button
+              className={`icon${column.voting ? ' on' : ''}`}
+              title={column.voting ? 'Desativar votação nesta coluna' : 'Ativar votação nesta coluna'}
+              aria-label={column.voting ? 'Desativar votação' : 'Ativar votação'}
+              aria-pressed={column.voting}
+              onClick={onToggleVoting}
+            >
+              🗳
+            </button>
             <button
               className="icon"
               title="Renomear coluna"
@@ -368,6 +422,19 @@ function Column({
           </span>
         )}
       </h2>
+      {column.voting && (
+        <p className="vote-hint muted small">
+          Vote nos itens que o time vai atacar na próxima sprint. Cards votados não podem ser removidos.
+          {isAdmin && cards.some((c) => c.votes > 0) && (
+            <>
+              {' '}
+              <button className="link accent" onClick={onSortByVotes}>
+                Ordenar por votos
+              </button>
+            </>
+          )}
+        </p>
+      )}
       <form onSubmit={submit} className="add">
         <textarea
           value={text}
@@ -395,9 +462,14 @@ function Column({
               <Card
                 key={card.id}
                 card={card}
-                // Mesma regra do servidor: fora do tempo, só o admin mexe nos cards
-                canDelete={running ? card.mine || isAdmin : isAdmin}
+                // Mesma regra do servidor: fora do tempo, só o admin mexe nos cards;
+                // card votado nunca pode ser removido
+                canDelete={card.votes === 0 && (running ? card.mine || isAdmin : isAdmin)}
                 canEdit={running ? card.mine : isAdmin}
+                canDrag={isAdmin}
+                voting={column.voting}
+                topVotes={column.voting ? Math.max(0, ...cards.map((c) => c.votes)) : 0}
+                onVote={() => onVote(card)}
                 onDelete={() => onDelete(card.id)}
                 onEdit={(text) => onEdit(card.id, text)}
               />
@@ -410,14 +482,16 @@ function Column({
   )
 }
 
-function Card({ card, canDelete, canEdit, onDelete, onEdit }) {
+function Card({ card, canDelete, canEdit, canDrag, voting, topVotes, onVote, onDelete, onEdit }) {
   const [draft, setDraft] = useState(null)
   const editing = draft !== null && canEdit
-  // Enquanto edita, o card não arrasta (senão espaço/setas do teclado moveriam o card)
+  // Só o admin arrasta; enquanto edita, nem ele (espaço/setas do teclado moveriam o card)
+  const draggable = canDrag && !editing
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
-    disabled: editing,
+    disabled: !draggable,
   })
+  const top = voting && card.votes > 0 && card.votes === topVotes
   const style = { transform: CSS.Transform.toString(transform), transition }
   const stop = (e) => e.stopPropagation()
 
@@ -431,9 +505,8 @@ function Card({ card, canDelete, canEdit, onDelete, onEdit }) {
     <li
       ref={setNodeRef}
       style={style}
-      className={`card${isDragging ? ' dragging' : ''}${card.mine ? ' mine' : ''}${editing ? ' editing' : ''}`}
-      {...attributes}
-      {...(editing ? {} : listeners)}
+      className={`card${isDragging ? ' dragging' : ''}${card.mine ? ' mine' : ''}${editing ? ' editing' : ''}${draggable ? ' draggable' : ''}${top ? ' top-voted' : ''}`}
+      {...(draggable ? { ...attributes, ...listeners } : {})}
     >
       {editing ? (
         <textarea
@@ -456,8 +529,21 @@ function Card({ card, canDelete, canEdit, onDelete, onEdit }) {
         <p>{card.text}</p>
       )}
       <footer>
-        <span className="muted small">{card.author || (card.mine ? 'Você' : '')}</span>
+        <span className="muted small">
+          {card.author || (card.mine ? 'Você' : '')}
+          {top && <span className="top-badge">Mais votado</span>}
+        </span>
         <span className="card-actions" onPointerDown={stop} onKeyDown={stop}>
+          {voting && !editing && (
+            <button
+              className={`vote${card.voted ? ' voted' : ''}`}
+              aria-pressed={card.voted}
+              title={card.voted ? 'Tirar meu voto' : 'Votar neste item'}
+              onClick={onVote}
+            >
+              ▲ {card.votes}
+            </button>
+          )}
           {editing ? (
             <>
               <button className="link muted" onClick={() => setDraft(null)}>
